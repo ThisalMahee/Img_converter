@@ -51,10 +51,16 @@
         return name.substring(dot).toLowerCase();
     }
 
+    const MAX_FILE_SIZE = 50 * 1024 * 1024;
+    const MAX_IMAGE_DIMENSION = 10000;
+
     function validateFile(file) {
         const ext = getExtensionFromFilename(file.name);
         const accepted = getAcceptedExtensions();
-        return accepted.includes(ext);
+        if (!accepted.includes(ext)) return false;
+        if (file.size > MAX_FILE_SIZE) return false;
+        if (file.size === 0) return false;
+        return true;
     }
 
     function handleFiles(files) {
@@ -62,10 +68,16 @@
         dropzone.classList.remove('has-error');
 
         let validFiles = Array.from(files).filter(validateFile);
+        let rejected = Array.from(files).filter(f => !validateFile(f));
         
-        if (validFiles.length < files.length) {
+        if (rejected.length > 0) {
             const expected = currentMode === 'to-png' ? 'JPG' : 'PNG';
-            errorMsg.textContent = 'Some files were ignored. Please upload ' + expected + ' files.';
+            const reasons = rejected.map(f => {
+                if (f.size === 0) return `"${f.name}" is empty`;
+                if (f.size > MAX_FILE_SIZE) return `"${f.name}" exceeds 50 MB limit`;
+                return `"${f.name}" is not a valid ${expected} file`;
+            }).join('. ');
+            errorMsg.textContent = 'Some files were ignored: ' + reasons;
             errorMsg.classList.add('show');
             dropzone.classList.add('has-error');
         }
@@ -83,32 +95,39 @@
     function addFileCard(file) {
         const card = document.createElement('div');
         card.className = 'file-card';
-        card.innerHTML = `
-            <div class="file-icon-small">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2"/>
-                    <circle cx="8.5" cy="8.5" r="1.5"/>
-                    <polyline points="21 15 16 10 5 21"/>
-                </svg>
-            </div>
-            <div class="file-info">
-                <div class="file-name">${file.name}</div>
-                <div class="file-size">${formatFileSize(file.size)}</div>
-            </div>
-            <button class="file-remove" aria-label="Remove file">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                    <line x1="18" y1="6" x2="6" y2="18"/>
-                    <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-            </button>
-        `;
 
-        card.querySelector('.file-remove').addEventListener('click', () => {
+        const iconDiv = document.createElement('div');
+        iconDiv.className = 'file-icon-small';
+        iconDiv.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
+
+        const infoDiv = document.createElement('div');
+        infoDiv.className = 'file-info';
+
+        const nameDiv = document.createElement('div');
+        nameDiv.className = 'file-name';
+        nameDiv.textContent = file.name;
+
+        const sizeDiv = document.createElement('div');
+        sizeDiv.className = 'file-size';
+        sizeDiv.textContent = formatFileSize(file.size);
+
+        infoDiv.appendChild(nameDiv);
+        infoDiv.appendChild(sizeDiv);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'file-remove';
+        removeBtn.setAttribute('aria-label', 'Remove file');
+        removeBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+
+        removeBtn.addEventListener('click', () => {
             filesArray = filesArray.filter(f => f !== file);
             card.remove();
             updateUIState();
         });
 
+        card.appendChild(iconDiv);
+        card.appendChild(infoDiv);
+        card.appendChild(removeBtn);
         fileList.appendChild(card);
     }
 
@@ -170,7 +189,7 @@
             successMsg.classList.add('show');
             downloadBtn.disabled = false;
         } catch (err) {
-            errorMsg.textContent = 'An error occurred during conversion.';
+            errorMsg.textContent = err.message || 'An error occurred during conversion.';
             errorMsg.classList.add('show');
         } finally {
             loadingOverlay.classList.remove('show');
@@ -184,9 +203,17 @@
             reader.onload = function(e) {
                 const img = new Image();
                 img.onload = function() {
+                    const w = img.naturalWidth;
+                    const h = img.naturalHeight;
+
+                    if (w > MAX_IMAGE_DIMENSION || h > MAX_IMAGE_DIMENSION) {
+                        reject(new Error(`Image dimensions (${w}x${h}) exceed the maximum allowed (${MAX_IMAGE_DIMENSION}x${MAX_IMAGE_DIMENSION})`));
+                        return;
+                    }
+
                     const canvas = document.createElement('canvas');
-                    canvas.width = img.naturalWidth;
-                    canvas.height = img.naturalHeight;
+                    canvas.width = w;
+                    canvas.height = h;
                     const ctx = canvas.getContext('2d');
 
                     if (currentMode === 'to-jpg') {
@@ -200,6 +227,10 @@
                     const quality = currentMode === 'to-jpg' ? 0.92 : undefined;
                     
                     canvas.toBlob(blob => {
+                        if (!blob) {
+                            reject(new Error('Failed to generate image blob'));
+                            return;
+                        }
                         resolve({
                             name: getOutputFileName(file.name),
                             blob: blob
